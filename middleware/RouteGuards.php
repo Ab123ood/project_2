@@ -41,11 +41,12 @@ class RouteGuards {
     private const EMPLOYEE_ROUTES = [
         '/dashboard',
         '/exams',
-        '/progress', 
+        '/progress',
         '/surveys',
         '/profile',
         '/leaderboard',
-        '/content'
+        '/content',
+        '/notifications'
     ];
 
     /**
