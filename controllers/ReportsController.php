@@ -105,7 +105,7 @@ class ReportsController extends Controller {
             ],
             'points' => [
                 'date_col' => 'created_at',
-                'sql' => 'SELECT id, CONCAT("Points: ", points, " (", COALESCE(action, ""), ")") AS item, "points" AS kind, CAST(user_id AS CHAR) AS user, created_at AS dt FROM points_log {WHERE} ORDER BY created_at DESC LIMIT 1000',
+                'sql' => 'SELECT id, CONCAT("Points: ", points, " (", COALESCE(action_type, ""), ")") AS item, "points" AS kind, CAST(user_id AS CHAR) AS user, created_at AS dt FROM points_log {WHERE} ORDER BY created_at DESC LIMIT 1000',
             ],
         ];
 

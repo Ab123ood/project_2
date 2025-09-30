@@ -59,21 +59,21 @@ set_exception_handler(function ($exception) {
 
 // Autoloader for classes
 spl_autoload_register(function ($class) {
-    $paths = [
-        __DIR__ . '/core/' . $class . '.php',
-        __DIR__ . '/controllers/' . $class . '.php',
-        __DIR__ . '/models/' . $class . '.php',
-        __DIR__ . '/middleware/' . $class . '.php',
-        __DIR__ . '/services/' . $class . '.php',
-    ];
-    
-    foreach ($paths as $file) {
-        if (file_exists($file)) {
+    $directories = ['core', 'controllers', 'middleware', 'services', 'models'];
+
+    foreach ($directories as $directory) {
+        $base = __DIR__ . '/' . $directory;
+        if (!is_dir($base)) {
+            continue;
+        }
+
+        $file = $base . '/' . $class . '.php';
+        if (is_file($file)) {
             require_once $file;
             return;
         }
     }
-    
+
     // Log missing class in development
     if (IS_DEVELOPMENT) {
         error_log("Class not found: {$class}");

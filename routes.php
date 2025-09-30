@@ -8,6 +8,7 @@ $router->add('GET', '/', [HomeController::class, 'index']);
 // الموظف
 $router->add('GET', '/dashboard', [EmployeeController::class, 'dashboard']);
 $router->add('GET', '/profile', [EmployeeController::class, 'profile']);
+$router->add('GET', '/notifications', [EmployeeController::class, 'notifications']);
 
 // المحتوى
 $router->add('GET', '/content', [ContentController::class, 'index']);
