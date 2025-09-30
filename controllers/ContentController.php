@@ -11,7 +11,8 @@ class ContentController extends Controller {
     
     public function index() {
         $userId = $_SESSION['user_id'] ?? 0;
-        
+        $locale = $this->determineLocale();
+
         // المحتوى المميز
         $featuredQuery = "
             SELECT c.id, c.title, c.description, c.type, c.thumbnail_url AS thumbnail,
@@ -32,7 +33,10 @@ class ContentController extends Controller {
         $stmt = $this->db->prepare($contentQuery);
         $stmt->execute([$userId]);
         $content = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
+
+        $featuredContent = TranslationService::translateCollection($featuredContent, ['title', 'description', 'category_name'], $locale);
+        $content = TranslationService::translateCollection($content, ['title', 'description', 'category_name'], $locale);
+
         // الإحصائيات
         $stats = ['total_content' => 0, 'viewed_content' => 0, 'favorited_content' => 0, 'earned_points' => 0];
         
@@ -54,15 +58,18 @@ class ContentController extends Controller {
         $this->render('employee/content', [
             'featuredContent' => $featuredContent,
             'content' => $content,
-            'stats' => $stats
+            'stats' => $stats,
+            'locale' => $locale,
         ]);
     }
-    
+
     public function view($id) {
         if (!$id) {
             header('Location: ' . $this->basePath() . '/content');
             exit;
         }
+
+        $locale = $this->determineLocale();
         
         $contentQuery = "
             SELECT c.*, cc.name as category_name, cc.color as category_color, cc.icon as category_icon,
@@ -86,12 +93,15 @@ class ContentController extends Controller {
         $stmt = $this->db->prepare($contentQuery);
         $stmt->execute([$id]);
         $content = $stmt->fetch(PDO::FETCH_ASSOC);
-        
+
         if (!$content) {
             header('Location: ' . $this->basePath() . '/content');
             exit;
         }
-        
+
+        $translatedContent = TranslationService::translateCollection([$content], ['title', 'description', 'category_name', 'type_display', 'difficulty_display'], $locale);
+        $content = $translatedContent[0] ?? $content;
+
         if (isset($_SESSION['user_id'])) {
             $this->trackContentView($id, $_SESSION['user_id']);
         }
@@ -113,10 +123,13 @@ class ContentController extends Controller {
         $stmt = $this->db->prepare($relatedQuery);
         $stmt->execute([$content['category_id'], $id]);
         $relatedContent = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
+
+        $relatedContent = TranslationService::translateCollection($relatedContent, ['title', 'description', 'category_name', 'type_display'], $locale);
+
         $this->render('employee/content-view', [
             'content' => $content,
-            'relatedContent' => $relatedContent
+            'relatedContent' => $relatedContent,
+            'locale' => $locale,
         ]);
     }
     
@@ -218,9 +231,12 @@ class ContentController extends Controller {
         $stmt = $this->db->prepare($sql);
         $stmt->execute($params);
         $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
+
+        $locale = $this->determineLocale();
+        $results = TranslationService::translateCollection($results, ['title', 'description', 'category_name', 'type_display'], $locale);
+
         header('Content-Type: application/json; charset=utf-8');
-        echo json_encode($results);
+        echo json_encode($results, JSON_UNESCAPED_UNICODE);
         exit;
     }
     
