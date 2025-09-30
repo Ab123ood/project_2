@@ -11,6 +11,9 @@ class ContentController extends Controller {
     
     public function index() {
         $userId = $_SESSION['user_id'] ?? 0;
+        $locale = $this->determineLocale();
+        $this->bootLocalization($locale);
+        $translator = $this->translator();
         
         // المحتوى المميز
         $featuredQuery = "
@@ -51,10 +54,14 @@ class ContentController extends Controller {
             $stats['total_content'] = $this->db->query("SELECT COUNT(*) FROM content WHERE publish_status = 'published'")->fetchColumn();
         }
         
+        $featuredContent = $translator->translateCollection($featuredContent, ['title', 'description', 'category_name'], $locale);
+        $content = $translator->translateCollection($content, ['title', 'description', 'category_name'], $locale);
+
         $this->render('employee/content', [
             'featuredContent' => $featuredContent,
             'content' => $content,
-            'stats' => $stats
+            'stats' => $stats,
+            'locale' => $locale,
         ]);
     }
     
@@ -63,11 +70,15 @@ class ContentController extends Controller {
             header('Location: ' . $this->basePath() . '/content');
             exit;
         }
-        
+
+        $locale = $this->determineLocale();
+        $this->bootLocalization($locale);
+        $translator = $this->translator();
+
         $contentQuery = "
             SELECT c.*, cc.name as category_name, cc.color as category_color, cc.icon as category_icon,
                    u.user_name as author_name,
-                   CASE c.type 
+                   CASE c.type
                        WHEN 'video' THEN 'فيديو'
                        WHEN 'article' THEN 'مقال'
                        WHEN 'infographic' THEN 'إنفوجرافيك'
@@ -113,10 +124,16 @@ class ContentController extends Controller {
         $stmt = $this->db->prepare($relatedQuery);
         $stmt->execute([$content['category_id'], $id]);
         $relatedContent = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
+
+        $content = $translator->translateRecord($content, ['title', 'description', 'category_name'], $locale);
+        $content['type_display'] = $translator->translate((string)($content['type_display'] ?? ''), $locale);
+        $content['difficulty_display'] = $translator->translate((string)($content['difficulty_display'] ?? ''), $locale);
+        $relatedContent = $translator->translateCollection($relatedContent, ['title', 'description', 'category_name', 'type_display'], $locale);
+
         $this->render('employee/content-view', [
             'content' => $content,
-            'relatedContent' => $relatedContent
+            'relatedContent' => $relatedContent,
+            'locale' => $locale,
         ]);
     }
     
@@ -180,6 +197,9 @@ class ContentController extends Controller {
         $query = $_GET['q'] ?? '';
         $category = $_GET['category'] ?? '';
         $type = $_GET['type'] ?? '';
+        $locale = $this->determineLocale();
+        $this->bootLocalization($locale);
+        $translator = $this->translator();
         
         $sql = "
             SELECT c.*, cc.name as category_name,
@@ -218,7 +238,8 @@ class ContentController extends Controller {
         $stmt = $this->db->prepare($sql);
         $stmt->execute($params);
         $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
+        $results = $translator->translateCollection($results, ['title', 'description', 'category_name', 'type_display'], $locale);
+
         header('Content-Type: application/json; charset=utf-8');
         echo json_encode($results);
         exit;

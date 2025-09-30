@@ -45,7 +45,8 @@ class RouteGuards {
         '/surveys',
         '/profile',
         '/leaderboard',
-        '/content'
+        '/content',
+        '/notifications'
     ];
 
     /**

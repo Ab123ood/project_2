@@ -6,7 +6,7 @@ if ($basePath === '/' || $basePath === '\\') { $basePath = ''; }
 // تشخيص الجلسة والدور
 if (session_status() === PHP_SESSION_NONE) { @session_start(); }
 $roleId = $_SESSION['role_id'] ?? 1;
-$userName = $_SESSION['user_name'] ?? $user['user_name'] ?? __('common.user');
+$userName = $_SESSION['user_name'] ?? ((isset($user) && is_array($user) && !empty($user['user_name'])) ? $user['user_name'] : __('common.user'));
 
 // تحديد نوع المحتوى حسب الدور
 $isEmployee = ($roleId == 1);
@@ -116,7 +116,12 @@ $isAdmin = ($roleId == 3);
                   </div>
                   <div class="flex-1 min-w-0">
                     <h4 class="font-medium text-gray-900 mb-1 truncate"><?= htmlspecialchars($item['title'] ?? '') ?></h4>
-                    <p class="text-sm text-gray-600 mb-2 line-clamp-2"><?= htmlspecialchars(substr($item['description'] ?? '', 0, 80)) ?>...</p>
+<?php
+                    $rawDescription = (string)($item['description'] ?? '');
+                    $excerpt = mb_substr($rawDescription, 0, 80, 'UTF-8');
+                    $needsEllipsis = mb_strlen($rawDescription, 'UTF-8') > 80;
+?>
+                    <p class="text-sm text-gray-600 mb-2 line-clamp-2"><?= htmlspecialchars($excerpt) ?><?= $needsEllipsis ? '…' : '' ?></p>
                     <a href="<?= $basePath ?>/content/view/<?= $item['id'] ?>" class="text-sm text-blue-600 hover:text-blue-700 font-medium"><?= __('employee.dashboard.read_more') ?></a>
                   </div>
                 </div>

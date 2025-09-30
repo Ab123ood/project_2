@@ -1,6 +1,7 @@
 <?php
 // app/controllers/EmployeeController.php
 
+
 class EmployeeController extends Controller {
     
 
@@ -21,10 +22,13 @@ class EmployeeController extends Controller {
 
     public function dashboard(): void {
         $this->requireLogin();
-        
+
         $userId = $_SESSION['user_id'];
         $roleId = $_SESSION['role_id'] ?? 1;
-        
+        $locale = $this->determineLocale();
+        $translator = $this->translator();
+        $this->bootLocalization($locale);
+
         // إذا كان موظف عادي، إعادة توجيه لصفحة حسابي
         if ($roleId === 1) {
             header('Location: ' . $this->basePath() . '/profile');
@@ -35,7 +39,7 @@ class EmployeeController extends Controller {
         $stats = [];
         $suggested = [];
         $notifications = [];
-        $recentActivities = []; // للأدمن
+        $recentActivities = [];
 
         try {
             if ($roleId === 2) { // مسؤول توعية
@@ -51,28 +55,24 @@ class EmployeeController extends Controller {
 
                 // بيانات النشاطات الأخيرة للأدمن
                 $recentActivities = [
-                    ['title' => 'مستخدم جديد انضم', 'time' => 'منذ 5 دقائق'],
-                    ['title' => 'دورة جديدة أضيفت', 'time' => 'منذ ساعة'],
-                    ['title' => 'تحديث أمني جديد', 'time' => 'منذ ساعتين']
+                    ['title' => 'مستخدم جديد انضم', 'time' => date('Y/m/d H:i', strtotime('-5 minutes'))],
+                    ['title' => 'دورة جديدة أضيفت', 'time' => date('Y/m/d H:i', strtotime('-1 hour'))],
+                    ['title' => 'تحديث أمني جديد', 'time' => date('Y/m/d H:i', strtotime('-2 hours'))]
                 ];
             }
-            
+
             // محتوى مقترح للمسؤولين
-            $suggested = Database::query(
-                'SELECT id, title, description, type, created_at FROM content 
-                 WHERE publish_status = "published" 
-                 ORDER BY created_at DESC 
-                 LIMIT 6'
-            )->fetchAll();
-            
+            $suggested = $this->getSuggestedContent($userId, $locale, 6);
+
             // إشعارات للمسؤولين
-            $notifications = Database::query(
-                'SELECT title, message, created_at FROM notifications WHERE user_id = :uid ORDER BY created_at DESC LIMIT 10',
-                [':uid' => $userId]
-            )->fetchAll();
-            
+            $notifications = $this->getRecentNotifications($userId, $locale, 10);
+
         } catch (Throwable $e) {
             // استخدام القيم الافتراضية في الواجهة
+        }
+
+        if (!empty($recentActivities)) {
+            $recentActivities = $translator->translateCollection($recentActivities, ['title'], $locale);
         }
 
         $this->render('dashboard', [
@@ -86,10 +86,12 @@ class EmployeeController extends Controller {
 
     public function profile(): void {
         $this->requireLogin();
-        
+
         $userId = $_SESSION['user_id'];
         $roleId = $_SESSION['role_id'] ?? 1;
-        
+        $locale = $this->determineLocale();
+        $this->bootLocalization($locale);
+
         // جلب إحصائيات المستخدم من قاعدة البيانات
         $userStats = $this->getUserStats($userId);
         // طَبِّق خريطة مفاتيح لتتوافق مع الواجهة
@@ -102,10 +104,12 @@ class EmployeeController extends Controller {
         ];
 
         // جلب المحتوى المقترح
-        $suggested = $this->getSuggestedContent($userId);
-        
+        $suggested = $this->getSuggestedContent($userId, $locale, 6);
+
         // جلب الإشعارات الحديثة
-        $notifications = $this->getRecentNotifications($userId);
+        $notifications = $this->getRecentNotifications($userId, $locale, 10);
+
+        $recentActivities = $this->getUserRecentActivities($userId, $locale);
 
         $this->render('dashboard', [
             'pageTitle' => 'حسابي',
@@ -113,6 +117,7 @@ class EmployeeController extends Controller {
             'suggested' => $suggested,
             'notifications' => $notifications,
             'recentActivities' => $recentActivities,
+            'locale' => $locale,
         ]);
     }
     
@@ -156,23 +161,27 @@ class EmployeeController extends Controller {
         }
     }
     
-    private function getRecentNotifications($userId): array {
+    private function getRecentNotifications(int $userId, string $locale, int $limit = 5): array {
         try {
-            // جلب الإشعارات الخاصة بالمستخدم
-            $notifications = Database::query(
-                'SELECT * FROM notifications 
-                 WHERE user_id = :user_id 
-                 ORDER BY created_at DESC 
-                 LIMIT 5',
-                [':user_id' => $userId]
-            )->fetchAll();
-            
-            return $notifications ?: [];
-        } catch (Exception $e) {
+            $pdo = Database::connection();
+            $stmt = $pdo->prepare(
+                'SELECT id, title, message, category, is_read, is_important, action_url, action_text, created_at
+                 FROM notifications
+                 WHERE user_id = :user_id
+                 ORDER BY created_at DESC
+                 LIMIT :limit'
+            );
+            $stmt->bindValue(':user_id', $userId, \PDO::PARAM_INT);
+            $stmt->bindValue(':limit', $limit, \PDO::PARAM_INT);
+            $stmt->execute();
+            $notifications = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+
+            return $this->translator()->translateCollection($notifications, ['title', 'message', 'action_text'], $locale);
+        } catch (Throwable $e) {
             return [];
         }
     }
-    
+
     private function getAvailableExams($userId): array {
         try {
             // استعلام بسيط ومباشر للاختبارات المفعلة
@@ -205,29 +214,30 @@ class EmployeeController extends Controller {
         }
     }
     
-    private function getSuggestedContent($userId): array {
+    private function getSuggestedContent(int $userId, string $locale, int $limit = 6): array {
         try {
-            // جلب المحتوى المقترح بناءً على الاختبارات غير المكتملة
-            $content = Database::query(
-                'SELECT e.id, e.title, e.description, e.category, e.difficulty_level
-                 FROM exams e
-                 LEFT JOIN user_progress up ON e.id = up.content_id 
-                     AND up.user_id = :user_id 
-                     AND up.content_type = "exam"
-                 WHERE e.is_active = 1 
-                     AND (up.status IS NULL OR up.status != "completed")
-                 ORDER BY 
-                     CASE e.difficulty_level 
-                         WHEN "beginner" THEN 1 
-                         WHEN "intermediate" THEN 2 
-                         WHEN "advanced" THEN 3 
-                     END
-                 LIMIT 4',
-                [':user_id' => $userId]
-            )->fetchAll();
-            
-            return $content ?: [];
-        } catch (Exception $e) {
+            $pdo = Database::connection();
+            $stmt = $pdo->prepare(
+                "SELECT c.id, c.title, c.description, c.type, c.thumbnail_url, c.est_duration, c.created_at,
+                        COALESCE(cc.name, '') AS category_name,
+                        COALESCE(up.status, 'not_started') AS progress_status
+                 FROM content c
+                 LEFT JOIN user_progress up ON up.content_id = c.id
+                     AND up.user_id = :user_id
+                     AND up.content_type = 'content'
+                 LEFT JOIN content_categories cc ON cc.id = c.category_id
+                 WHERE c.publish_status = 'published'
+                   AND (up.status IS NULL OR up.status != 'completed')
+                 ORDER BY COALESCE(up.updated_at, c.created_at) DESC
+                 LIMIT :limit"
+            );
+            $stmt->bindValue(':user_id', $userId, \PDO::PARAM_INT);
+            $stmt->bindValue(':limit', $limit, \PDO::PARAM_INT);
+            $stmt->execute();
+            $content = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+
+            return $this->translator()->translateCollection($content, ['title', 'description', 'category_name'], $locale);
+        } catch (Throwable $e) {
             return [];
         }
     }
@@ -334,6 +344,164 @@ class EmployeeController extends Controller {
         }
         
         $this->render('employee/exams', ['exams' => $exams, 'stats' => $stats]);
+    }
+
+    private function getUserRecentActivities(int $userId, string $locale): array
+    {
+        try {
+            $rows = Database::query(
+                'SELECT action_type, points, created_at FROM points_log
+                 WHERE user_id = :user_id
+                 ORDER BY created_at DESC
+                 LIMIT 5',
+                [':user_id' => $userId]
+            )->fetchAll();
+        } catch (Throwable $e) {
+            $rows = [];
+        }
+
+        $activities = [];
+        $translator = $this->translator();
+        foreach ($rows as $row) {
+            $activities[] = [
+                'title' => $translator->translate('نشاط جديد', $locale),
+                'time' => isset($row['created_at']) ? date('Y/m/d H:i', strtotime($row['created_at'])) : $translator->translate('الآن', $locale)
+            ];
+        }
+
+        return $activities;
+    }
+
+    public function notifications(): void
+    {
+        $this->requireLogin();
+
+        $userId = (int)$_SESSION['user_id'];
+        $locale = $this->determineLocale();
+
+        $page = max(1, (int)($_GET['page'] ?? 1));
+        $perPage = 10;
+        $offset = ($page - 1) * $perPage;
+
+        try {
+            $totalNotifications = (int)Database::query(
+                'SELECT COUNT(*) FROM notifications WHERE user_id = :user_id',
+                [':user_id' => $userId]
+            )->fetchColumn();
+        } catch (Throwable $e) {
+            $totalNotifications = 0;
+        }
+
+        $notifications = [];
+        try {
+            $pdo = Database::connection();
+            $stmt = $pdo->prepare(
+                'SELECT id, title, message, category, is_read, is_important, action_url, action_text, created_at
+                 FROM notifications
+                 WHERE user_id = :user_id
+                 ORDER BY created_at DESC
+                 LIMIT :limit OFFSET :offset'
+            );
+            $stmt->bindValue(':user_id', $userId, \PDO::PARAM_INT);
+            $stmt->bindValue(':limit', $perPage, \PDO::PARAM_INT);
+            $stmt->bindValue(':offset', $offset, \PDO::PARAM_INT);
+            $stmt->execute();
+            $notifications = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+            $notifications = $this->translator()->translateCollection($notifications, ['title', 'message', 'action_text'], $locale);
+        } catch (Throwable $e) {
+            $notifications = [];
+        }
+
+        $unreadCount = (int)$this->safeCount('SELECT COUNT(*) FROM notifications WHERE user_id = :user_id AND is_read = 0', $userId);
+        $readCount = (int)$this->safeCount('SELECT COUNT(*) FROM notifications WHERE user_id = :user_id AND is_read = 1', $userId);
+        $importantCount = (int)$this->safeCount('SELECT COUNT(*) FROM notifications WHERE user_id = :user_id AND is_important = 1', $userId);
+
+        $totalPages = $perPage > 0 ? (int)ceil($totalNotifications / $perPage) : 1;
+
+        $this->render('employee/notifications', [
+            'notifications' => $notifications,
+            'unreadCount' => $unreadCount,
+            'readCount' => $readCount,
+            'importantCount' => $importantCount,
+            'totalNotifications' => $totalNotifications,
+            'currentPage' => $page,
+            'perPage' => $perPage,
+            'totalPages' => $totalPages,
+            'locale' => $locale,
+        ]);
+    }
+
+    public function markNotificationRead(int $id): void
+    {
+        $this->requireLogin();
+        $userId = (int)$_SESSION['user_id'];
+
+        try {
+            Database::query(
+                'UPDATE notifications SET is_read = 1 WHERE id = :id AND user_id = :user_id',
+                [':id' => $id, ':user_id' => $userId]
+            );
+            $this->jsonResponse(['success' => true]);
+        } catch (Throwable $e) {
+            $this->jsonResponse(['success' => false], 500);
+        }
+    }
+
+    public function markAllNotificationsRead(): void
+    {
+        $this->requireLogin();
+        $userId = (int)$_SESSION['user_id'];
+
+        try {
+            Database::query(
+                'UPDATE notifications SET is_read = 1 WHERE user_id = :user_id AND is_read = 0',
+                [':user_id' => $userId]
+            );
+            $this->jsonResponse(['success' => true]);
+        } catch (Throwable $e) {
+            $this->jsonResponse(['success' => false], 500);
+        }
+    }
+
+    public function deleteNotification(int $id): void
+    {
+        $this->requireLogin();
+        $userId = (int)$_SESSION['user_id'];
+
+        try {
+            Database::query(
+                'DELETE FROM notifications WHERE id = :id AND user_id = :user_id',
+                [':id' => $id, ':user_id' => $userId]
+            );
+            $this->jsonResponse(['success' => true]);
+        } catch (Throwable $e) {
+            $this->jsonResponse(['success' => false], 500);
+        }
+    }
+
+    public function checkNewNotifications(): void
+    {
+        $this->requireLogin();
+        $userId = (int)$_SESSION['user_id'];
+
+        try {
+            $count = (int)Database::query(
+                'SELECT COUNT(*) FROM notifications WHERE user_id = :user_id AND is_read = 0',
+                [':user_id' => $userId]
+            )->fetchColumn();
+            $this->jsonResponse(['hasNew' => $count > 0]);
+        } catch (Throwable $e) {
+            $this->jsonResponse(['hasNew' => false], 500);
+        }
+    }
+
+    private function safeCount(string $sql, int $userId): int
+    {
+        try {
+            return (int)Database::query($sql, [':user_id' => $userId])->fetchColumn();
+        } catch (Throwable $e) {
+            return 0;
+        }
     }
 
     public function progress(): void {

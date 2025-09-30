@@ -4,6 +4,11 @@
  * Provides common functionality for all controllers
  */
 class Controller {
+
+    /**
+     * Lazy-loaded translation service instance
+     */
+    private ?TranslationService $translationService = null;
     
     /**
      * Get the base path of the application
@@ -91,6 +96,19 @@ class Controller {
 
         // Render with layout
         require VIEW_PATH . '/layout/layout.php';
+    }
+
+    /**
+     * Shared translation service accessor
+     */
+    protected function translator(): TranslationService
+    {
+        if ($this->translationService === null) {
+            $defaultLocale = $GLOBALS['config']['app']['locale'] ?? 'ar';
+            $this->translationService = new TranslationService($defaultLocale);
+        }
+
+        return $this->translationService;
     }
 
     /**
