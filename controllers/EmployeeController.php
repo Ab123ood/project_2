@@ -21,7 +21,10 @@ class EmployeeController extends Controller {
 
     public function dashboard(): void {
         $this->requireLogin();
-        
+
+        $localization = $this->bootLocalization();
+        $locale = $localization->getLocale();
+
         $userId = $_SESSION['user_id'];
         $roleId = $_SESSION['role_id'] ?? 1;
         
@@ -35,7 +38,7 @@ class EmployeeController extends Controller {
         $stats = [];
         $suggested = [];
         $notifications = [];
-        $recentActivities = []; // للأدمن
+        $recentActivities = [];
 
         try {
             if ($roleId === 2) { // مسؤول توعية
@@ -48,29 +51,12 @@ class EmployeeController extends Controller {
                 $stats['completed_courses'] = (int)Database::query('SELECT COALESCE(SUM(content_completed),0) FROM user_stats')->fetchColumn();
                 $stats['certificates_issued'] = 892; // قيمة افتراضية
                 $stats['security_rate'] = 94; // قيمة افتراضية
-
-                // بيانات النشاطات الأخيرة للأدمن
-                $recentActivities = [
-                    ['title' => 'مستخدم جديد انضم', 'time' => 'منذ 5 دقائق'],
-                    ['title' => 'دورة جديدة أضيفت', 'time' => 'منذ ساعة'],
-                    ['title' => 'تحديث أمني جديد', 'time' => 'منذ ساعتين']
-                ];
+                $recentActivities = $this->getUserActivityFeed($userId, $locale, 5);
             }
-            
-            // محتوى مقترح للمسؤولين
-            $suggested = Database::query(
-                'SELECT id, title, description, type, created_at FROM content 
-                 WHERE publish_status = "published" 
-                 ORDER BY created_at DESC 
-                 LIMIT 6'
-            )->fetchAll();
-            
-            // إشعارات للمسؤولين
-            $notifications = Database::query(
-                'SELECT title, message, created_at FROM notifications WHERE user_id = :uid ORDER BY created_at DESC LIMIT 10',
-                [':uid' => $userId]
-            )->fetchAll();
-            
+
+            $suggested = $this->getSuggestedContent(null, $locale, 6);
+            $notifications = $this->getRecentNotifications($userId, $locale, 10);
+
         } catch (Throwable $e) {
             // استخدام القيم الافتراضية في الواجهة
         }
@@ -81,12 +67,16 @@ class EmployeeController extends Controller {
             'suggested' => $suggested,
             'notifications' => $notifications,
             'recentActivities' => $recentActivities,
+            'user' => $this->getUserProfile($userId),
         ]);
     }
 
     public function profile(): void {
         $this->requireLogin();
-        
+
+        $localization = $this->bootLocalization();
+        $locale = $localization->getLocale();
+
         $userId = $_SESSION['user_id'];
         $roleId = $_SESSION['role_id'] ?? 1;
         
@@ -102,10 +92,12 @@ class EmployeeController extends Controller {
         ];
 
         // جلب المحتوى المقترح
-        $suggested = $this->getSuggestedContent($userId);
-        
+        $suggested = $this->getSuggestedContent($userId, $locale, 6);
+
         // جلب الإشعارات الحديثة
-        $notifications = $this->getRecentNotifications($userId);
+        $notifications = $this->getRecentNotifications($userId, $locale, 5);
+
+        $recentActivities = $this->getUserActivityFeed($userId, $locale, 6);
 
         $this->render('dashboard', [
             'pageTitle' => 'حسابي',
@@ -113,6 +105,7 @@ class EmployeeController extends Controller {
             'suggested' => $suggested,
             'notifications' => $notifications,
             'recentActivities' => $recentActivities,
+            'user' => $this->getUserProfile($userId),
         ]);
     }
     
@@ -156,18 +149,31 @@ class EmployeeController extends Controller {
         }
     }
     
-    private function getRecentNotifications($userId): array {
+    private function getRecentNotifications(int $userId, string $locale, int $limit = 5): array {
         try {
-            // جلب الإشعارات الخاصة بالمستخدم
-            $notifications = Database::query(
-                'SELECT * FROM notifications 
-                 WHERE user_id = :user_id 
-                 ORDER BY created_at DESC 
-                 LIMIT 5',
-                [':user_id' => $userId]
-            )->fetchAll();
-            
-            return $notifications ?: [];
+            $conn = Database::connection();
+            $stmt = $conn->prepare(
+                'SELECT id, title, message, type, action_url, is_read, created_at
+                 FROM notifications
+                 WHERE user_id = :user_id
+                 ORDER BY created_at DESC
+                 LIMIT :limit'
+            );
+            $stmt->bindValue(':user_id', $userId, PDO::PARAM_INT);
+            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+            $stmt->execute();
+
+            $notifications = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            $notifications = TranslationService::translateCollection($notifications, ['title', 'message'], $locale);
+
+            foreach ($notifications as &$notification) {
+                $notification['category'] = $notification['type'] ?? 'system';
+                $notification['is_important'] = in_array($notification['type'] ?? '', ['warning', 'error'], true);
+                $notification['action_text'] = TranslationService::translate('عرض', $locale);
+            }
+            unset($notification);
+
+            return $notifications;
         } catch (Exception $e) {
             return [];
         }
@@ -175,6 +181,7 @@ class EmployeeController extends Controller {
     
     private function getAvailableExams($userId): array {
         try {
+            $locale = Localization::getInstance()->getLocale();
             // استعلام بسيط ومباشر للاختبارات المفعلة
             $exams = Database::query(
                 'SELECT id, title, description, category, difficulty_level, duration_minutes, is_active, created_at
@@ -198,35 +205,120 @@ class EmployeeController extends Controller {
                 $exam['status'] = $exam['progress_status']; // للتوافق مع العرض
             }
             
+            $exams = TranslationService::translateCollection($exams, ['title', 'description', 'category'], $locale);
             return $exams;
         } catch (Exception $e) {
             error_log("EmployeeController getAvailableExams error: " . $e->getMessage());
             return [];
         }
     }
-    
-    private function getSuggestedContent($userId): array {
+
+    private function getUserActivityFeed(int $userId, string $locale, int $limit = 5): array {
         try {
-            // جلب المحتوى المقترح بناءً على الاختبارات غير المكتملة
-            $content = Database::query(
-                'SELECT e.id, e.title, e.description, e.category, e.difficulty_level
-                 FROM exams e
-                 LEFT JOIN user_progress up ON e.id = up.content_id 
-                     AND up.user_id = :user_id 
-                     AND up.content_type = "exam"
-                 WHERE e.is_active = 1 
-                     AND (up.status IS NULL OR up.status != "completed")
-                 ORDER BY 
-                     CASE e.difficulty_level 
-                         WHEN "beginner" THEN 1 
-                         WHEN "intermediate" THEN 2 
-                         WHEN "advanced" THEN 3 
-                     END
-                 LIMIT 4',
-                [':user_id' => $userId]
-            )->fetchAll();
-            
-            return $content ?: [];
+            $conn = Database::connection();
+            $stmt = $conn->prepare(
+                'SELECT pl.id, pl.points, pl.action_type, pl.description, pl.created_at,
+                        e.title AS exam_title,
+                        c.title AS content_title
+                 FROM points_log pl
+                 LEFT JOIN exams e ON pl.reference_id = e.id AND pl.action_type = "exam_completed"
+                 LEFT JOIN content c ON pl.reference_id = c.id AND pl.action_type IN ("content_viewed", "content_completed")
+                 WHERE pl.user_id = :user_id
+                 ORDER BY pl.created_at DESC
+                 LIMIT :limit'
+            );
+            $stmt->bindValue(':user_id', $userId, PDO::PARAM_INT);
+            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+            $stmt->execute();
+
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+            $activities = [];
+            foreach ($rows as $row) {
+                $title = $this->buildActivityTitle($row);
+                $activities[] = [
+                    'title' => TranslationService::translate($title, $locale),
+                    'time' => date('Y/m/d H:i', strtotime($row['created_at'] ?? 'now')),
+                ];
+            }
+
+            return $activities;
+        } catch (Throwable $e) {
+            return [];
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     */
+    private function buildActivityTitle(array $row): string
+    {
+        $reference = $row['description'] ?? '';
+        if ($reference === '') {
+            $reference = $row['exam_title'] ?? $row['content_title'] ?? '';
+        }
+
+        $reference = trim((string)$reference);
+
+        switch ($row['action_type'] ?? '') {
+            case 'exam_completed':
+                return $reference !== '' ? "أكمل اختبار: {$reference}" : 'أكمل اختبار جديد';
+            case 'content_viewed':
+                return $reference !== '' ? "شاهد محتوى: {$reference}" : 'شاهد محتوى جديد';
+            case 'content_completed':
+                return $reference !== '' ? "أكمل محتوى: {$reference}" : 'أكمل مادة تعليمية';
+            case 'survey_completed':
+                return $reference !== '' ? "أكمل استبيان: {$reference}" : 'أكمل استبياناً جديداً';
+            default:
+                return $reference !== '' ? $reference : 'نشاط جديد';
+        }
+    }
+
+    private function getUserProfile(int $userId): array
+    {
+        try {
+            $row = Database::query(
+                'SELECT id, user_name, email, status, created_at FROM users WHERE id = :id',
+                [':id' => $userId]
+            )->fetch();
+
+            return $row ?: [];
+        } catch (Throwable $e) {
+            return [];
+        }
+    }
+
+    private function getSuggestedContent(?int $userId, string $locale, int $limit = 4): array {
+        try {
+            $conn = Database::connection();
+
+            $sql = 'SELECT c.id, c.title, c.description, c.type, c.created_at
+                    FROM content c';
+
+            if ($userId !== null) {
+                $sql .= ' LEFT JOIN user_progress up ON up.content_id = c.id
+                           AND up.user_id = :user_id
+                           AND up.content_type = "content"';
+            }
+
+            $sql .= ' WHERE c.publish_status = "published"';
+
+            if ($userId !== null) {
+                $sql .= ' AND (up.status IS NULL OR up.status != "completed")';
+            }
+
+            $sql .= ' ORDER BY c.created_at DESC LIMIT :limit';
+
+            $stmt = $conn->prepare($sql);
+            if ($userId !== null) {
+                $stmt->bindValue(':user_id', $userId, PDO::PARAM_INT);
+            }
+            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+            $stmt->execute();
+
+            $content = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+            return TranslationService::translateCollection($content, ['title', 'description'], $locale);
         } catch (Exception $e) {
             return [];
         }
@@ -234,7 +326,10 @@ class EmployeeController extends Controller {
 
     public function exams(): void {
         $this->requireLogin();
-        
+
+        $localization = $this->bootLocalization();
+        $locale = $localization->getLocale();
+
         $userId = $_SESSION['user_id'];
         
         // استخدام استعلام بسيط مضمون
@@ -269,7 +364,7 @@ class EmployeeController extends Controller {
             foreach ($exams as &$exam) {
                 // جلب حالة التقدم
                 $progress = Database::query(
-                    'SELECT status, progress_percentage FROM user_progress 
+                    'SELECT status, progress_percentage FROM user_progress
                      WHERE user_id = ? AND content_id = ? AND content_type = "exam"',
                     [$userId, $exam['id']]
                 )->fetch();
@@ -333,21 +428,26 @@ class EmployeeController extends Controller {
             // استخدام القيم الافتراضية
         }
         
+        $exams = TranslationService::translateCollection($exams, ['title', 'description', 'category'], $locale);
+
         $this->render('employee/exams', ['exams' => $exams, 'stats' => $stats]);
     }
 
     public function progress(): void {
         $this->requireLogin();
-        
+
+        $localization = $this->bootLocalization();
+        $locale = $localization->getLocale();
+
         $userId = $_SESSION['user_id'];
-        
+
         // جلب إحصائيات المستخدم التفصيلية
         $userStats = $this->getUserStats($userId);
         
         // جلب الشارات المكتسبة
         try {
             $earnedBadges = Database::query(
-                'SELECT b.*, ub.earned_at 
+                'SELECT b.*, ub.earned_at
                  FROM user_badges ub
                  JOIN badges b ON ub.badge_id = b.id
                  WHERE ub.user_id = :user_id
@@ -357,7 +457,9 @@ class EmployeeController extends Controller {
         } catch (Exception $e) {
             $earnedBadges = [];
         }
-        
+
+        $earnedBadges = TranslationService::translateCollection($earnedBadges, ['name', 'description'], $locale);
+
         // جلب الأنشطة الأخيرة
         try {
             $recentActivities = Database::query(
@@ -372,7 +474,17 @@ class EmployeeController extends Controller {
         } catch (Exception $e) {
             $recentActivities = [];
         }
-        
+
+        foreach ($recentActivities as &$activity) {
+            if (isset($activity['description']) && is_string($activity['description'])) {
+                $activity['description'] = TranslationService::translate($activity['description'], $locale);
+            }
+            if (isset($activity['exam_title']) && is_string($activity['exam_title'])) {
+                $activity['exam_title'] = TranslationService::translate($activity['exam_title'], $locale);
+            }
+        }
+        unset($activity);
+
         $this->render('employee/progress', [
             'userStats' => $userStats,
             'earnedBadges' => $earnedBadges,
@@ -382,9 +494,12 @@ class EmployeeController extends Controller {
 
     public function surveys(): void {
         $this->requireLogin();
-        
+
+        $localization = $this->bootLocalization();
+        $locale = $localization->getLocale();
+
         $userId = $_SESSION['user_id'];
-        
+
         // جلب جميع الاستبيانات المتاحة
         try {
             $surveys = Database::query(
@@ -410,6 +525,8 @@ class EmployeeController extends Controller {
         } catch (Exception $e) {
             $surveys = [];
         }
+
+        $surveys = TranslationService::translateCollection($surveys, ['title', 'description', 'category'], $locale);
 
         // حساب إحصائيات الاستبيانات للمستخدم لعرضها في الواجهة
         $stats = [

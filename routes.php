@@ -8,6 +8,11 @@ $router->add('GET', '/', [HomeController::class, 'index']);
 // الموظف
 $router->add('GET', '/dashboard', [EmployeeController::class, 'dashboard']);
 $router->add('GET', '/profile', [EmployeeController::class, 'profile']);
+$router->add('GET', '/notifications', [NotificationsController::class, 'index']);
+$router->add('POST', '/notifications/(\d+)/mark-read', [NotificationsController::class, 'markRead']);
+$router->add('POST', '/notifications/mark-all-read', [NotificationsController::class, 'markAllRead']);
+$router->add('POST', '/notifications/(\d+)/delete', [NotificationsController::class, 'delete']);
+$router->add('GET', '/notifications/check-new', [NotificationsController::class, 'checkNew']);
 
 // المحتوى
 $router->add('GET', '/content', [ContentController::class, 'index']);
